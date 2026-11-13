@@ -4,94 +4,181 @@ name: QuickSupport Eddydata - Windows
 on:
   workflow_dispatch:
 
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  LLVM_VERSION: "15.0.6"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  VCPKG_BINARY_SOURCES: "clear"
+
 jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+    with:
+      version: "1.5.3"
+    secrets: inherit
+
   build-windows:
-    name: Build QuickSupport Windows 1.2.2
+    name: Build QuickSupport Eddydata
+    needs: generate-bridge
     runs-on: windows-2022
 
-    env:
-      RENDEZVOUS_SERVER: ${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}
-      RS_PUB_KEY: ${{ secrets.EDDYDATA_PUBLIC_KEY }}
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
-
     steps:
-      - name: Checkout RustDesk 1.2.2
+      - name: Checkout RustDesk 1.5.3
         uses: actions/checkout@v4
         with:
           repository: rustdesk/rustdesk
-          ref: refs/tags/1.2.2
+          ref: refs/tags/1.5.3
           submodules: recursive
 
-      - name: Install Rust 1.75
-        uses: dtolnay/rust-toolchain@1.75.0
+      - name: Download Bridge
+        uses: actions/download-artifact@v4
         with:
-          targets: x86_64-pc-windows-msvc
+          name: bridge-artifact
+          path: ./
+
+      - name: Configure Eddydata server
+        shell: pwsh
+        env:
+          EDDY_SERVER: ${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}
+          EDDY_KEY: ${{ secrets.EDDYDATA_PUBLIC_KEY }}
+        run: |
+          if (-not $env:EDDY_SERVER -or -not $env:EDDY_KEY) {
+            throw "Secrets Eddydata não configurados."
+          }
+
+          $config = "libs/hbb_common/src/config.rs"
+
+          if (-not (Test-Path $config)) {
+            throw "Arquivo config.rs não encontrado."
+          }
+
+          $content = Get-Content $config -Raw
+
+          if (-not $content.Contains("rs-ny.rustdesk.com")) {
+            throw "Servidor padrão não encontrado no código."
+          }
+
+          $content = $content.Replace(
+            "rs-ny.rustdesk.com",
+            $env:EDDY_SERVER
+          )
+
+          $defaultKey = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw="
+
+          if (-not $content.Contains($defaultKey)) {
+            throw "Chave padrão não encontrada no código."
+          }
+
+          $content = $content.Replace(
+            $defaultKey,
+            $env:EDDY_KEY
+          )
+
+          Set-Content -Path $config -Value $content -NoNewline
+
+          Write-Host "Configuração Eddydata aplicada."
+          Write-Host "Servidor: $env:EDDY_SERVER"
+          Write-Host "Portas padrão: 21116 e 21117"
 
       - name: Install LLVM
-        uses: KyleMayes/install-llvm-action@v2
+        uses: KyleMayes/install-llvm-action@v1
         with:
-          version: 15.0.6
+          version: ${{ env.LLVM_VERSION }}
 
-      - name: Install NASM
-        run: choco install nasm -y --no-progress
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Prepare Flutter engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+
+          Invoke-WebRequest `
+            -Uri "https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip" `
+            -OutFile windows-engine.zip
+
+          $enginePath = "C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release"
+
+          Expand-Archive windows-engine.zip -DestinationPath windows-engine -Force
+
+          Copy-Item windows-engine/* $enginePath -Recurse -Force
+
+      - name: Patch Flutter
+        shell: bash
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff \
+            "$(dirname "$(dirname "$(which flutter)")")"
+
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-1.5.3
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
 
       - name: Install vcpkg dependencies
-        shell: powershell
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         run: |
-          $VCPKG_ROOT = "$env:RUNNER_TEMP\vcpkg"
+          "$VCPKG_ROOT/vcpkg" install \
+            --triplet x64-windows-static \
+            --x-install-root="$VCPKG_ROOT/installed"
 
-          git clone https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
-          git -C $VCPKG_ROOT checkout 2023.04.15
-
-          & "$VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
-
-          & "$VCPKG_ROOT\vcpkg.exe" install `
-            libvpx:x64-windows-static `
-            libyuv:x64-windows-static `
-            opus:x64-windows-static `
-            aom:x64-windows-static
-
-          "VCPKG_ROOT=$VCPKG_ROOT" >> $env:GITHUB_ENV
-          "VCPKGRS_TRIPLET=x64-windows-static" >> $env:GITHUB_ENV
-
-      - name: Validate Eddydata configuration
-        shell: powershell
+      - name: Build RustDesk
+        shell: pwsh
         run: |
-          if (-not $env:RENDEZVOUS_SERVER) {
-            throw "Secret EDDYDATA_RENDEZVOUS_SERVER não configurado."
-          }
-          if (-not $env:RS_PUB_KEY) {
-            throw "Secret EDDYDATA_PUBLIC_KEY não configurado."
-          }
+          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
 
-      - name: Build RustDesk 1.2.2
-        shell: powershell
+      - name: Prepare QuickSupport Eddydata
+        shell: pwsh
         run: |
-          cargo build --release --locked --target x86_64-pc-windows-msvc
-
-      - name: Prepare QuickSupport package
-        shell: powershell
-        run: |
-          $release = "target\x86_64-pc-windows-msvc\release"
+          $release = "flutter/build/windows/x64/runner/Release"
           $package = "QuickSupportEddydata"
+
+          if (-not (Test-Path "$release/rustdesk.exe")) {
+            throw "Executável rustdesk.exe não foi gerado."
+          }
 
           New-Item -ItemType Directory -Force -Path $package | Out-Null
 
-          Invoke-WebRequest `
-            -Uri "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll" `
-            -OutFile "$package\sciter.dll"
+          Copy-Item "$release/*" $package -Recurse -Force
 
-          Copy-Item "$release\rustdesk.exe" "$package\QuickSupportEddydata.exe"
+          Rename-Item `
+            "$package/rustdesk.exe" `
+            "QuickSupportEddydata.exe"
 
           Compress-Archive `
-            -Path "$package\*" `
-            -DestinationPath "QuickSupportEddydata-Windows-1.2.2.zip" `
+            -Path "$package/*" `
+            -DestinationPath "QuickSupportEddydata-Windows-1.5.3.zip" `
+            -CompressionLevel Optimal `
             -Force
 
       - name: Upload QuickSupport Eddydata
         uses: actions/upload-artifact@v4
         with:
-          name: QuickSupport-Eddydata-Windows-1.2.2
-          path: QuickSupportEddydata-Windows-1.2.2.zip
+          name: QuickSupport-Eddydata-Windows-1.5.3
+          path: QuickSupportEddydata-Windows-1.5.3.zip
           if-no-files-found: error
           retention-days: 30
