@@ -1,0 +1,97 @@
+
+name: QuickSupport Eddydata - Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build QuickSupport Windows 1.2.2
+    runs-on: windows-2022
+
+    env:
+      RENDEZVOUS_SERVER: ${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}
+      RS_PUB_KEY: ${{ secrets.EDDYDATA_PUBLIC_KEY }}
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+
+    steps:
+      - name: Checkout RustDesk 1.2.2
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/1.2.2
+          submodules: recursive
+
+      - name: Install Rust 1.75
+        uses: dtolnay/rust-toolchain@1.75.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: 15.0.6
+
+      - name: Install NASM
+        run: choco install nasm -y --no-progress
+
+      - name: Install vcpkg dependencies
+        shell: powershell
+        run: |
+          $VCPKG_ROOT = "$env:RUNNER_TEMP\vcpkg"
+
+          git clone https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          git -C $VCPKG_ROOT checkout 2023.04.15
+
+          & "$VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+          & "$VCPKG_ROOT\vcpkg.exe" install `
+            libvpx:x64-windows-static `
+            libyuv:x64-windows-static `
+            opus:x64-windows-static `
+            aom:x64-windows-static
+
+          "VCPKG_ROOT=$VCPKG_ROOT" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=x64-windows-static" >> $env:GITHUB_ENV
+
+      - name: Validate Eddydata configuration
+        shell: powershell
+        run: |
+          if (-not $env:RENDEZVOUS_SERVER) {
+            throw "Secret EDDYDATA_RENDEZVOUS_SERVER não configurado."
+          }
+          if (-not $env:RS_PUB_KEY) {
+            throw "Secret EDDYDATA_PUBLIC_KEY não configurado."
+          }
+
+      - name: Build RustDesk 1.2.2
+        shell: powershell
+        run: |
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Prepare QuickSupport package
+        shell: powershell
+        run: |
+          $release = "target\x86_64-pc-windows-msvc\release"
+          $package = "QuickSupportEddydata"
+
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll" `
+            -OutFile "$package\sciter.dll"
+
+          Copy-Item "$release\rustdesk.exe" "$package\QuickSupportEddydata.exe"
+
+          Compress-Archive `
+            -Path "$package\*" `
+            -DestinationPath "QuickSupportEddydata-Windows-1.2.2.zip" `
+            -Force
+
+      - name: Upload QuickSupport Eddydata
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickSupport-Eddydata-Windows-1.2.2
+          path: QuickSupportEddydata-Windows-1.2.2.zip
+          if-no-files-found: error
+          retention-days: 30
