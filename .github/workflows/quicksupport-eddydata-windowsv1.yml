@@ -1,0 +1,249 @@
+name: QuickSupport Eddydata - Windows
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  LLVM_VERSION: "15.0.6"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  VCPKG_BINARY_SOURCES: "clear"
+  APP_NAME: "Eddydata QuickSupport"
+  EXE_NAME: "EddydataQuickSupport"
+  VERSION: "1.5.3"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+    with:
+      version: "1.5.3"
+    secrets: inherit
+
+  build-windows:
+    name: Build QuickSupport Eddydata
+    needs: generate-bridge
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout RustDesk 1.5.3
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/1.5.3
+          submodules: recursive
+
+      - name: Download Bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Checkout logo from this repo
+        uses: actions/checkout@v4
+        with:
+          path: logo-src
+          sparse-checkout: |
+            logoeddy.png
+          sparse-checkout-cone-mode: false
+
+      - name: Configure server, key and API
+        shell: bash
+        env:
+          EDDY_SERVER: ${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}
+          EDDY_KEY: ${{ secrets.EDDYDATA_PUBLIC_KEY }}
+        run: |
+          if [ -z "$EDDY_SERVER" ] || [ -z "$EDDY_KEY" ]; then
+            echo "ERRO: Secrets EDDYDATA_RENDEZVOUS_SERVER ou EDDYDATA_PUBLIC_KEY não configurados."
+            exit 1
+          fi
+
+          # Substitui servidor e chave no config.rs
+          sed -i -e "s|rs-ny.rustdesk.com|$EDDY_SERVER|" ./libs/hbb_common/src/config.rs
+          sed -i -e "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|$EDDY_KEY|" ./libs/hbb_common/src/config.rs
+
+          # API Server
+          sed -i -e "s|https://admin.rustdesk.com|https://$EDDY_SERVER|" ./src/common.rs
+
+          echo "Servidor configurado: $EDDY_SERVER"
+          echo "Chave pública aplicada."
+
+      - name: Change application name
+        shell: bash
+        run: |
+          # Cargo.toml principal
+          sed -i -e 's|description = "RustDesk Remote Desktop"|description = "Eddydata QuickSupport"|' ./Cargo.toml
+          sed -i -e 's|ProductName = "RustDesk"|ProductName = "Eddydata QuickSupport"|' ./Cargo.toml
+          sed -i -e 's|FileDescription = "RustDesk Remote Desktop"|FileDescription = "Eddydata QuickSupport"|' ./Cargo.toml
+          sed -i -e 's|OriginalFilename = "rustdesk.exe"|OriginalFilename = "EddydataQuickSupport.exe"|' ./Cargo.toml
+
+          # portable
+          sed -i -e 's|description = "RustDesk Remote Desktop"|description = "Eddydata QuickSupport"|' ./libs/portable/Cargo.toml
+          sed -i -e 's|ProductName = "RustDesk"|ProductName = "Eddydata QuickSupport"|' ./libs/portable/Cargo.toml
+          sed -i -e 's|FileDescription = "RustDesk Remote Desktop"|FileDescription = "Eddydata QuickSupport"|' ./libs/portable/Cargo.toml
+          sed -i -e 's|OriginalFilename = "rustdesk.exe"|OriginalFilename = "EddydataQuickSupport.exe"|' ./libs/portable/Cargo.toml
+          sed -i -e 's|const APP_PREFIX: \&str = "rustdesk";|const APP_PREFIX: \&str = "EddydataQuickSupport";|' ./libs/portable/src/main.rs
+
+          # Runner.rc
+          sed -i -e 's|"RustDesk Remote Desktop"|"Eddydata QuickSupport"|' ./flutter/windows/runner/Runner.rc
+          sed -i -e 's|VALUE "InternalName", "rustdesk" "\0"|VALUE "InternalName", "EddydataQuickSupport" "\0"|' ./flutter/windows/runner/Runner.rc
+          sed -i -e 's|"rustdesk.exe"|"EddydataQuickSupport.exe"|' ./flutter/windows/runner/Runner.rc
+          sed -i -e 's|"RustDesk"|"Eddydata QuickSupport"|' ./flutter/windows/runner/Runner.rc
+
+          # Linguagens
+          find ./src/lang -name "*.rs" -exec sed -i -e 's|RustDesk|Eddydata QuickSupport|g' {} \;
+
+          echo "Nome do aplicativo alterado para Eddydata QuickSupport"
+
+      - name: Change company name
+        shell: bash
+        run: |
+          sed -i -e 's|Purslane Tech Pte. Ltd.|Eddydata|' ./flutter/lib/desktop/pages/desktop_setting_page.dart || true
+          sed -i -e 's|Purslane Ltd|Eddydata|' ./flutter/lib/desktop/pages/desktop_setting_page.dart || true
+          sed -i -e 's|Purslane Tech Pte. Ltd.|Eddydata|' ./Cargo.toml || true
+          sed -i -e 's|Purslane Ltd|Eddydata|' ./Cargo.toml || true
+          sed -i -e 's|Purslane Tech Pte. Ltd.|Eddydata|' ./libs/portable/Cargo.toml || true
+          sed -i -e 's|Purslane Ltd|Eddydata|' ./libs/portable/Cargo.toml || true
+          sed -i -e 's|Purslane Tech Pte. Ltd.|Eddydata|' ./flutter/windows/runner/Runner.rc || true
+          sed -i -e 's|Purslane Ltd|Eddydata|' ./flutter/windows/runner/Runner.rc || true
+          echo "Empresa alterada para Eddydata"
+
+      - name: Apply allowCustom and remove setup tip
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/allowCustom.py -OutFile allowCustom.py
+          python allowCustom.py
+          Invoke-WebRequest -Uri https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/removeSetupServerTip.diff -OutFile removeSetupServerTip.diff
+          git apply removeSetupServerTip.diff --ignore-whitespace || true
+
+      - name: Install ImageMagick
+        run: |
+          choco install -y imagemagick.app --no-progress
+          Get-ChildItem -Path "${env:ProgramFiles}" | % { $_.FullName } | Select-String -Pattern "[\/\\]ImageMagick[^\/\\]*$" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+
+      - name: Process logo and icons
+        shell: bash
+        run: |
+          cp logo-src/logoeddy.png ./res/icon.png
+          # Gera ícone multi-tamanho
+          magick ./res/icon.png -define icon:auto-resize=256,128,96,64,48,40,32,24,20,16 ./res/icon.ico
+          magick ./res/icon.png -resize 32x32 ./res/tray-icon.ico
+          magick ./res/icon.png -resize 32x32 ./res/32x32.png
+          magick ./res/icon.png -resize 64x64 ./res/64x64.png
+          magick ./res/icon.png -resize 128x128 ./res/128x128.png
+          magick ./res/icon.png -resize 256x256 ./res/128x128@2x.png
+          echo "Logo processado"
+
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Prepare Flutter engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri "https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip" -OutFile windows-engine.zip
+          $enginePath = "C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release"
+          Expand-Archive windows-engine.zip -DestinationPath windows-engine -Force
+          Copy-Item windows-engine/* $enginePath -Recurse -Force
+
+      - name: Patch Flutter
+        shell: bash
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$(dirname "$(dirname "$(which flutter)")")" || true
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-qs-1.5.3
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Build RustDesk
+        shell: pwsh
+        run: |
+          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+
+      - name: Create custom_.txt (QuickSupport config)
+        shell: bash
+        run: |
+          # JSON de configuração do QuickSupport
+          cat > ./flutter/build/windows/x64/runner/Release/custom_.txt << 'EOF'
+{"conn-type":"incoming","disable-installation":"Y","disable-settings":"Y","app-name":"Eddydata QuickSupport","override-settings":{"hide-powered-by-me":"Y","custom-rendezvous-server":"${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}","api-server":"https://${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}"},"default-settings":{}}
+EOF
+          # Substitui o placeholder pelos secrets reais
+          SERVER="${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}"
+          sed -i "s|\${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}|$SERVER|g" ./flutter/build/windows/x64/runner/Release/custom_.txt
+          echo "custom_.txt criado:"
+          cat ./flutter/build/windows/x64/runner/Release/custom_.txt
+
+      - name: Apply logo inside built assets
+        shell: bash
+        run: |
+          RELEASE="flutter/build/windows/x64/runner/Release"
+          if [ -d "$RELEASE/data/flutter_assets/assets" ]; then
+            cp logo-src/logoeddy.png "$RELEASE/data/flutter_assets/assets/logo.png" || true
+            magick logo-src/logoeddy.png -resize 48x48 "$RELEASE/data/flutter_assets/assets/icon.png" || true
+            cp ./res/icon.ico "$RELEASE/data/flutter_assets/assets/icon.ico" || true
+          fi
+
+      - name: Prepare final package
+        shell: pwsh
+        run: |
+          $release = "flutter/build/windows/x64/runner/Release"
+          $package = "EddydataQuickSupport"
+
+          if (-not (Test-Path "$release/rustdesk.exe")) {
+            throw "Executável rustdesk.exe não foi gerado."
+          }
+
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "$release/*" $package -Recurse -Force
+
+          Rename-Item "$package/rustdesk.exe" "EddydataQuickSupport.exe"
+
+          # Garante que o custom_.txt está presente
+          if (-not (Test-Path "$package/custom_.txt")) {
+            Copy-Item "$release/custom_.txt" "$package/custom_.txt" -ErrorAction SilentlyContinue
+          }
+
+          Compress-Archive -Path "$package/*" -DestinationPath "EddydataQuickSupport-Windows-1.5.3.zip" -CompressionLevel Optimal -Force
+
+          Write-Host "Pacote gerado com sucesso."
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EddydataQuickSupport-Windows-1.5.3
+          path: EddydataQuickSupport-Windows-1.5.3.zip
+          if-no-files-found: error
+          retention-days: 30
