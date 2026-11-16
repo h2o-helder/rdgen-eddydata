@@ -1,0 +1,201 @@
+name: Remote Eddydata - Windows
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  LLVM_VERSION: "15.0.6"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  VCPKG_BINARY_SOURCES: "clear"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+    with:
+      version: "1.5.3"
+    secrets: inherit
+
+  build-windows:
+    name: Build remoteeddydata
+    needs: generate-bridge
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout RustDesk 1.5.3
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/1.5.3
+          submodules: recursive
+
+      - name: Download Bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Checkout logo
+        uses: actions/checkout@v4
+        with:
+          repository: h2o-helder/rdgen-eddydata
+          ref: master
+          path: logo-src
+          sparse-checkout: |
+            logoeddy.png
+          sparse-checkout-cone-mode: false
+
+      - name: Write server and key into source
+        shell: bash
+        env:
+          EDDY_SERVER: ${{ secrets.EDDYDATA_RENDEZVOUS_SERVER }}
+          EDDY_KEY: ${{ secrets.EDDYDATA_PUBLIC_KEY }}
+        run: |
+          python - << 'PY'
+          import os
+          from pathlib import Path
+          server = os.environ.get("EDDY_SERVER", "").strip()
+          key = os.environ.get("EDDY_KEY", "").strip()
+          if not server or not key:
+              raise SystemExit("Secret do servidor ou da chave está vazio.")
+          cfg = Path("libs/hbb_common/src/config.rs")
+          if not cfg.exists():
+              raise SystemExit("config.rs não existe. Submodule não foi baixado.")
+          text = cfg.read_text(encoding="utf-8")
+          if "rs-ny.rustdesk.com" not in text:
+              raise SystemExit("Servidor padrão não encontrado em config.rs.")
+          old_key = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw="
+          if old_key not in text:
+              raise SystemExit("Chave padrão não encontrada em config.rs.")
+          text = text.replace("rs-ny.rustdesk.com", server).replace(old_key, key)
+          cfg.write_text(text, encoding="utf-8")
+          common = Path("src/common.rs")
+          c = common.read_text(encoding="utf-8")
+          if "https://admin.rustdesk.com" not in c:
+              raise SystemExit("URL da API não encontrada em common.rs.")
+          common.write_text(c.replace("https://admin.rustdesk.com", "https://" + server), encoding="utf-8")
+          check = cfg.read_text(encoding="utf-8")
+          if "rs-ny.rustdesk.com" in check or server not in check:
+              raise SystemExit("A troca do servidor não ficou gravada.")
+          print("Servidor gravado:", server)
+          PY
+
+      - name: Force QuickSupport layout and logo slot
+        shell: bash
+        run: |
+          python - << 'PY'
+          from pathlib import Path
+          p = Path("flutter/lib/desktop/pages/desktop_home_page.dart")
+          t = p.read_text(encoding="utf-8")
+          n = t.count("bind.isIncomingOnly()")
+          print("isIncomingOnly:", n)
+          if n < 2:
+              raise SystemExit("Layout do QuickSupport não encontrado.")
+          if "loadLogo()" not in t:
+              raise SystemExit("loadLogo() não existe nesta versão.")
+          p.write_text(t.replace("bind.isIncomingOnly()", "true"), encoding="utf-8")
+          PY
+
+      - name: Rename product
+        shell: bash
+        run: |
+          sed -i -e 's|ProductName = "RustDesk"|ProductName = "remoteeddydata"|' ./Cargo.toml
+          sed -i -e 's|FileDescription = "RustDesk Remote Desktop"|FileDescription = "remoteeddydata"|' ./Cargo.toml
+          sed -i -e 's|OriginalFilename = "rustdesk.exe"|OriginalFilename = "remoteeddydata.exe"|' ./Cargo.toml
+          sed -i -e 's|"RustDesk Remote Desktop"|"remoteeddydata"|' ./flutter/windows/runner/Runner.rc
+          sed -i -e 's|"rustdesk.exe"|"remoteeddydata.exe"|' ./flutter/windows/runner/Runner.rc
+
+      - name: Install logo before compile
+        shell: bash
+        run: |
+          test -f logo-src/logoeddy.png || { echo "logoeddy.png ausente na raiz do repositório"; exit 1; }
+          choco install -y imagemagick.app --no-progress
+          MAGICK=$(find "/c/Program Files" -iname magick.exe | head -n 1)
+          test -n "$MAGICK" || { echo "ImageMagick não instalou"; exit 1; }
+          cp logo-src/logoeddy.png ./res/icon.png
+          "$MAGICK" ./res/icon.png -define icon:auto-resize=256,128,96,64,48,40,32,24,20,16 ./res/icon.ico
+          "$MAGICK" ./res/icon.png -resize 32x32 ./res/tray-icon.ico
+          mkdir -p ./flutter/assets
+          cp logo-src/logoeddy.png ./flutter/assets/logo.png
+          cp logo-src/logoeddy.png ./flutter/assets/logo_light.png
+          cp logo-src/logoeddy.png ./flutter/assets/logo_dark.png
+
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Prepare Flutter engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri "https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip" -OutFile windows-engine.zip
+          $enginePath = "C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release"
+          Expand-Archive windows-engine.zip -DestinationPath windows-engine -Force
+          Copy-Item windows-engine/* $enginePath -Recurse -Force
+
+      - name: Patch Flutter
+        shell: bash
+        continue-on-error: true
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$(dirname "$(dirname "$(which flutter)")")"
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: remoteeddydata-1.5.3
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $release = "flutter/build/windows/x64/runner/Release"
+          if (-not (Test-Path "$release/rustdesk.exe")) { throw "rustdesk.exe não gerado." }
+          $package = "remoteeddydata"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "$release/*" $package -Recurse -Force
+          Rename-Item "$package/rustdesk.exe" "remoteeddydata.exe"
+          Compress-Archive -Path "$package/*" -DestinationPath "remoteeddydata-windows.zip" -CompressionLevel Optimal -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remoteeddydata-windows
+          path: remoteeddydata-windows.zip
+          if-no-files-found: error
+          retention-days: 30
