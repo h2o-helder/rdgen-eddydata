@@ -129,7 +129,7 @@ jobs:
           wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz
           tar xf flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz
           echo "$GITHUB_WORKSPACE/flutter/bin" >> "$GITHUB_PATH"
-          flutter --version
+          test -x "$GITHUB_WORKSPACE/flutter/bin/flutter"
 
       - name: Setup vcpkg
         run: |
