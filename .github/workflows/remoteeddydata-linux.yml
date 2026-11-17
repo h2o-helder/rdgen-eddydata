@@ -126,9 +126,10 @@ jobs:
 
       - name: Install Flutter
         run: |
-          wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz
-          tar xf flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz -C /opt
-          test -x /opt/flutter/bin/flutter
+          git clone https://github.com/flutter/flutter.git --depth 1 --branch 3.24.5 /opt/flutter
+          git config --global --add safe.directory /opt/flutter
+          /opt/flutter/bin/flutter config --no-analytics
+          /opt/flutter/bin/flutter precache --linux
           /opt/flutter/bin/flutter --version
           echo "/opt/flutter/bin" >> "$GITHUB_PATH"
 
@@ -147,8 +148,11 @@ jobs:
           /opt/vcpkg/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed"
           test -f /opt/vcpkg/installed/x64-linux/include/opus/opus_multistream.h
           echo "opus instalado."
+     
       - name: Build deb
         run: |
+          export PATH="/opt/flutter/bin:$PATH"
+          flutter --version
           python3 ./build.py --flutter
 
       - name: Collect deb
