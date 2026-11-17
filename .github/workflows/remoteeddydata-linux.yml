@@ -140,7 +140,12 @@ jobs:
           echo "VCPKG_ROOT=/opt/vcpkg" >> "$GITHUB_ENV"
           echo "/opt/vcpkg" >> "$GITHUB_PATH"
           /opt/vcpkg/vcpkg version
-
+       
+      - name: Install vcpkg libraries
+        run: |
+          /opt/vcpkg/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed"
+          test -f /opt/vcpkg/installed/x64-linux/include/opus/opus_multistream.h
+          echo "opus instalado."
       - name: Build deb
         run: |
           python3 ./build.py --flutter
