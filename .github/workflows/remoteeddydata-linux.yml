@@ -23,7 +23,14 @@ jobs:
       image: ubuntu:20.04
 
     steps:
-      - name: Checkout RustDesk 1.5.3
+        - name: Install git
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y
+          apt-get install -y git ca-certificates
+          git --version
+    
+        - name: Checkout RustDesk 1.5.3
         uses: actions/checkout@v4
         with:
           repository: rustdesk/rustdesk
